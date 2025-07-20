@@ -1,0 +1,155 @@
+# Greedy Cat AI Predictor - V3.1 (Belajar Pola + Web App + Dashboard Analitik)
+
+import random
+import json
+import os
+from collections import Counter, defaultdict
+from flask import Flask, request, jsonify, render_template_string
+
+app = Flask(__name__)
+
+# -------------------------
+# Simpan / Muat Data Historis
+# -------------------------
+DATA_FILE = "riwayat_simbol.json"
+
+# Inisialisasi jika belum ada file
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, 'w') as f:
+        json.dump([], f)
+
+def load_data():
+    with open(DATA_FILE, 'r') as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(data, f)
+
+# -------------------------
+# FUNGSI ANALISIS & PREDIKSI
+# -------------------------
+def analisis_frekuensi(riwayat):
+    semua = [simbol for baris in riwayat for simbol in baris]
+    return Counter(semua)
+
+def prediksi_simbol_berikut(frek: Counter, n=3):
+    simbol_jarang = frek.most_common()[:-n-1:-1]
+    return [s[0] for s in simbol_jarang]
+
+# Belajar pola transisi antar simbol (Markov Chain)
+def belajar_pola_markov(riwayat):
+    transisi = defaultdict(Counter)
+    for baris in riwayat:
+        for i in range(len(baris) - 1):
+            a, b = baris[i], baris[i + 1]
+            transisi[a][b] += 1
+    return transisi
+
+def prediksi_dari_simbol_terakhir(riwayat, transisi):
+    if not riwayat:
+        return []
+    terakhir = riwayat[-1][-1]
+    kemungkinan = transisi.get(terakhir, {})
+    if not kemungkinan:
+        return []
+    return [s for s, _ in kemungkinan.most_common(3)]
+
+# -------------------------
+# ENDPOINT WEB
+# -------------------------
+@app.route("/analisa", methods=["GET"])
+def analisa():
+    riwayat = load_data()
+    frekuensi = analisis_frekuensi(riwayat)
+    total = sum(frekuensi.values())
+    prediksi_frek = prediksi_simbol_berikut(frekuensi)
+
+    transisi = belajar_pola_markov(riwayat)
+    prediksi_pola = prediksi_dari_simbol_terakhir(riwayat, transisi)
+
+    return jsonify({
+        "frekuensi": {simbol: {"jumlah": jumlah, "persen": f"{jumlah / total:.1%}"} for simbol, jumlah in frekuensi.items()},
+        "prediksi_berdasarkan_frekuensi": prediksi_frek,
+        "prediksi_berdasarkan_pola": prediksi_pola,
+        "saran_taruhan": list(set(prediksi_frek + prediksi_pola))
+    })
+
+@app.route("/tambah", methods=["POST"])
+def tambah_data():
+    simbol_baru = request.json.get("hasil")
+    if not simbol_baru or not isinstance(simbol_baru, list):
+        return jsonify({"error": "Format salah, kirimkan list simbol."}), 400
+
+    data = load_data()
+    data.append(simbol_baru)
+    save_data(data)
+    return jsonify({"status": "data ditambahkan"})
+
+@app.route("/reset", methods=["POST"])
+def reset():
+    save_data([])
+    return jsonify({"status": "riwayat direset"})
+
+# -------------------------
+# DASHBOARD ANALITIK HTML
+# -------------------------
+@app.route("/")
+def dashboard():
+    riwayat = load_data()
+    frekuensi = analisis_frekuensi(riwayat)
+    total = sum(frekuensi.values())
+    prediksi_frek = prediksi_simbol_berikut(frekuensi)
+    transisi = belajar_pola_markov(riwayat)
+    prediksi_pola = prediksi_dari_simbol_terakhir(riwayat, transisi)
+    saran = list(set(prediksi_frek + prediksi_pola))
+
+    return render_template_string('''
+    <html><head><title>GreedyCat Dashboard</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f9f9f9; }
+        h1 { color: #333; }
+        table { border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 6px 12px; border: 1px solid #ccc; }
+        .box { background: white; padding: 10px; border-radius: 8px; box-shadow: 1px 1px 8px #aaa; }
+    </style>
+    </head>
+    <body>
+    <div class="box">
+        <h1>📊 Dashboard Greedy Cat AI</h1>
+        <h2>Frekuensi Simbol</h2>
+        <table>
+            <tr><th>Simbol</th><th>Jumlah</th><th>%</th></tr>
+            {% for s, data in frekuensi.items() %}
+                <tr><td>{{ s }}</td><td>{{ data['jumlah'] }}</td><td>{{ data['persen'] }}</td></tr>
+            {% endfor %}
+        </table>
+
+        <h2>🔮 Prediksi Berdasarkan Frekuensi</h2>
+        <p>{{ prediksi_frek }}</p>
+
+        <h2>🧠 Prediksi Berdasarkan Pola</h2>
+        <p>{{ prediksi_pola }}</p>
+
+        <h2>🎯 Saran Taruhan</h2>
+        <p style="font-size: 1.5em;">{{ saran }}</p>
+    </div>
+    </body></html>
+    ''', frekuensi={s: {"jumlah": j, "persen": f"{j / total:.1%}"} for s, j in frekuensi.items()}, 
+         prediksi_frek=prediksi_frek, prediksi_pola=prediksi_pola, saran=saran)
+
+# -------------------------
+# JALANKAN SERVER LOKAL
+# -------------------------
+if __name__ == '__main__':
+    app.run(debug=True)
+
+# -------------------------
+# PETUNJUK PENGGUNAAN:
+# -------------------------
+# 1. Jalankan script ini: python greedycat_predictor.py
+# 2. Buka browser: http://localhost:5000/ -> Dashboard
+# 3. http://localhost:5000/analisa -> JSON prediksi
+# 4. Kirim hasil baru via POST ke /tambah dengan JSON:
+#    {"hasil": ["🍅", "🥕", "🌽", ...]}
+# 5. Reset riwayat jika perlu via POST ke /reset
